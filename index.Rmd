@@ -19,17 +19,11 @@ author:
 date-format: long
 ---
 
-A Rmd version of this file is available in case Quarto is not installed.
-
 ## Data Cleaning
 
 ```{=r}
 library(bipartite)
 library(tidyverse)
-library(vegan)
-library(ggpubr)
-library(readxl)
-library(ggvegan)
 ```
 
 ```{r}
