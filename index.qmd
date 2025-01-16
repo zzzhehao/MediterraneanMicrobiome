@@ -1,0 +1,514 @@
+---
+title: Demonstrating Network Analysis with Mediterranean Microbial Data 
+date: 2025-01-15
+author:
+  - name: Zhehao Hu
+    email: hu_zhehao@hotmail.com
+    url: https://zzzhehao.github.io
+    affiliations:
+      - name: Department of Biology, University of Hamburg
+        city: Hamburg
+        country: Germany
+        url: https://www.biologie.uni-hamburg.de/en.html
+  - name: Jan Moritz Fehr
+    affiliations:
+      - name: Department of Biology, University of Hamburg
+        city: Hamburg
+        country: Germany
+        url: https://www.biologie.uni-hamburg.de/en.html
+date-format: long
+---
+
+## Data Cleaning
+
+```{=r}
+library(bipartite)
+library(tidyverse)
+```
+
+```{r}
+#| output: false
+
+library(bipartite)
+library(tidyverse)
+library(vegan)
+library(ggpubr)
+library(readxl)
+```
+
+```{r}
+ASV <- read.delim("data/ASV.txt", sep = "\t", header = TRUE)
+# ASV = abundance data of OTUs at sampling locations (OTU x location)
+ENV <- read.csv("data/ENV.txt", sep = "\t", header = TRUE)
+# ENV = environmental data of sampling locatoins
+LOC <- read.csv("data/Sample_Classification.tsv", sep ="\t", header = T)
+# LOC = Location data for sampling locations eg. depth / ocean layer
+```
+
+```{r}
+
+dfASV <- as.data.frame(t(ASV)) # turning ASV dataframe, as.data.frame to keep dataframe structure
+tENV <- as.data.frame(t(ENV)) # turning ENV dataframe, as.data.frame to keep dataframe structure
+
+colnames(dfASV) <- ASV$ID # Column names (OTUs) not as column names but as first row. renaming columns as OTUs
+dfASV <- dfASV[-1, ] # deleting row with OTUs
+
+dfASV <- dfASV %>% 
+  mutate_at(1:5457, as.numeric) %>% # turning abundance data into numeric
+  mutate(Sample=row.names(dfASV))  # adding column with sampling location names 
+  # rename(dfASV$name, Sample = name) # naming this column "Sample"
+
+colnames(tENV) <- ENV$ID # renaming the columns after the ID column in the ENV dataset. 
+tENV <- tENV[-1, ] # deleting the ID row in the tENV dataframe
+tENV <- tENV %>%
+  mutate(Sample=row.names(tENV)) # adding column with sampling location names
+  # rename(tENV$name, Sample = name) # naming this column "Sample"
+
+new <- left_join( #koining ASV and LOC dataframes
+  dfASV,
+  LOC, 
+  by = NULL
+  )
+
+new <- left_join(
+  new,
+  tENV, 
+  by = NULL
+  )
+```
+
+Subsetting for mediterranean sample locations:
+
+```{r}
+new.MS <- new[new[, "OceanRegion"] == "MS", ] # subsetting for samples from Mediterranean sea (MS)
+sp.MS <- new.MS[, 1:5457] # subsetting only the species abundance part of the MS dataframe
+sp.MS <- sp.MS %>% 
+  mutate_at(1:5457, as.numeric) # tuning df into numeric data.
+sp.MS <- sp.MS[, colSums(sp.MS) > 0] # only keeping columns where the sum is > 0. therefore getting rid off all OTUs not found in mediterranean sea
+
+sp.MS <- sp.MS %>%
+  mutate(Sample=new.MS$Sample) 
+  # rename(sp.MS$name, Sample = name)
+
+ENV.MS <- new.MS[, 5458:5473] # subsetting only location and environmental data of sampling locations in the MS
+
+MS <- left_join( # rejoining species abundance and location / environmental data of MS
+  sp.MS, 
+  ENV.MS, 
+  by = NULL
+)
+
+ab.mtx.ncol <- 3208
+
+saveRDS(MS, "data/MS.rds")
+```
+
+`MS` is now a dataframe comprising `r nrow(MS)` rows as sample sites and `r ab.mtx.ncol` columns of OTU, which stores the abundance data in the form of an adjacency matrix. There are additional `r ncol(MS) - ab.mtx.ncol` columns at the end for ecological data.
+
+## Bipartite (species ~ layer) network
+
+This part constructs the bipartite network showing microorganism in orders on the left side, and the layers in which they occure.
+
+```{r}
+MS$layer <- str_replace_all(MS$layer, "DCM", "EPI") 
+
+BAT <- MS[MS[, "layer"] == "BAT", ]
+MES <- MS[MS[, "layer"] == "MES", ]
+EPI <- MS[MS[, "layer"] == "EPI", ]
+SRF <- MS[MS[, "layer"] == "SRF", ]
+```
+
+OTUxtaxdata:
+
+```{r}
+# Step 1: Pivot the species columns to longer format
+long_df <- MS %>%
+  pivot_longer(
+    cols = 1:3208, # Adjust to match your species column names
+    names_to = "OTU",
+    values_to = "Observations"
+  )
+
+# Step 2: Filter rows where Observations > 0 (species were observed)
+long_df <- long_df %>%
+  filter(Observations > 0) %>%
+  select(OTU, layer, OceanRegion, Observations) # Keep only OTU and Layer columns
+
+# Step 3: Remove duplicates to ensure unique OTU-Layer combinations
+distinct_df <- long_df %>%
+  distinct()
+
+taxa_LUT <- data.frame(OTU = names(MS[1:ab.mtx.ncol]))
+
+prok_taxa <- read.csv("data/Prok_taxdata.txt", sep = "\t", header = TRUE)
+
+prok_taxa <- prok_taxa %>% 
+    mutate(OTU = gsub(pattern = "_ASV_", replacement = "_", x = .$ID)) %>%
+    mutate(Genus = Genus_SILVA, Family = Family_SILVA, Order = Order_SILVA, Class = Class_SILVA, Phylum = Phylum_SILVA, Kingdom = Kingdom_SILVA)
+
+euk_taxa <- read.csv("data/Euk_taxdata.txt", sep = "\t", header = TRUE)
+euk_taxa <- euk_taxa %>% 
+    mutate(OTU = gsub(pattern = "_ASV_", replacement = "_", x = .$ID)) %>%
+    mutate(Genus = Genus_pr2, Family = Family_pr2, Order = Order_pr2, Class = Class_pr2, Division = Division_pr2, Supergroup = Supergroup_pr2, Kingdom = Kingdom_pr2)
+
+all_taxa <- bind_rows(euk_taxa, prok_taxa)
+
+taxa_LUT <- left_join(taxa_LUT, all_taxa)
+taxa_LUT <- select(taxa_LUT, OTU, Genus, Family, Order, Class, Division, Supergroup, Kingdom, Phylum)
+
+OTUxtax <- left_join(distinct_df, taxa_LUT)
+
+OTUxlayer <- frame2webs(OTUxtax, varnames = c("layer", "Order", "OceanRegion", "Observations"))
+
+n_OTU <- ncol(OTUxlayer[[1]])
+OTU.abundance <- colSums(OTUxlayer[[1]])
+names(OTU.abundance) <- colnames(OTUxlayer[[1]])
+
+layer.colors <- c(
+  #"DCM" = "forestgreen",
+  "BAT" = "#253494", 
+  "MES" = "#2C7FB8",
+  "EPI" = "#41B6C4", 
+  "SRF" = "#7FCDBB"
+)
+
+higher_color <- as.data.frame(taxa_LUT$Order)
+higher_color <- higher_color %>%
+  mutate(Kingdom = taxa_LUT$Kingdom)
+higher_color <- unique(higher_color)
+higher_color <- na.omit(higher_color)
+
+OTU_colors <- c(
+  "Eukaryota" = "brown",
+  "Archaea" = "khaki",
+  "Bacteria" = "orange"
+)
+
+higher_color$color <- OTU_colors[higher_color$Kingdom] # Adding a color column to the dataframe MS
+
+dfOTUxlayer <- as.data.frame(OTUxlayer[[1]])
+dfOTUxlayer <- as.data.frame(t(dfOTUxlayer))
+dfOTUxlayer <- dfOTUxlayer %>%
+  mutate('taxa_LUT$Order' = rownames(dfOTUxlayer))
+
+str(dfOTUxlayer)
+str(higher_color)
+
+higher_color <- left_join(x=dfOTUxlayer, y=higher_color)
+sorted_higher_color <- higher_color[order(higher_color$color), ]
+sort <- sorted_higher_color$'taxa_LUT$Order'
+h.col <- sorted_higher_color$color
+
+
+layer_abundances <- c(rep(1000, times=5))
+names(layer_abundances) <- rownames(OTUxlayer[[1]])
+
+OTUxlayer[[1]] <- OTUxlayer[[1]][c("BAT", "MES", "EPI", "SRF"),]
+OTUxlayer[[1]] <- OTUxlayer[[1]][, c(sort)]
+
+plotweb_v2(OTUxlayer[[1]], text_size = 0.1, spacing = "auto", horizontal = TRUE, box_size = 0.075, sorting = "cca", curved_links = TRUE, link_alpha = 0.5, higher_abundances = OTU.abundance, lower_color = layer.colors,  link_color = "lower",
+           higher_color = h.col, scaling = "absolute")
+```
+
+## Module analysis
+
+Here we creat modules for the entire mediterranean sea or the depth layers. We extract only the abundance data from `MS`.
+
+```{r}
+MS.web <- as.matrix(MS[,1:3208]) 
+```
+
+Following line will computing modules for entire mediterranean sea, although it would take considerable amount of time, so we have included the compute result from our analysis.
+
+```{=r}
+moduleweb <- computeModules(MS.web)
+saveRDS("data/MSmoduleweb.rds")
+```
+
+```{r}
+moduleweb <- readRDS("data/MSmoduleweb.rds")
+```
+
+We could use heat map to see the association of the network module and depth layer, which agree with each other in general.
+
+```{r}
+loc.modules <- moduleweb@modules[-1, -c(1,2) ]
+loc.modules <- loc.modules[, 1:145]
+colnames(loc.modules) <- MS$Sample
+rownames(loc.modules) <- c("Module 1", "Modlue 2", "Module3")
+loc.modules[loc.modules > 0] <- 1
+loc.modules <- as.data.frame(t(loc.modules))
+loc.modules <- loc.modules %>%
+  mutate(Depth = MS$layer)
+sum.modules <- summarise(loc.modules, .by="Depth", across(1:3, sum))
+rownames(sum.modules) <- sum.modules$Depth
+sum.modules <- sum.modules[ , 2:4]
+sum.modules <- as.matrix(sum.modules)
+
+heatmap(sum.modules, Rowv = NA, Colv = NA)
+```
+
+## NMDS
+
+```{r}
+NMDS1 <- metaMDS(MS[,1:3208], k=2)
+
+# plot(NMDS1)
+treat=c(MS$layer)
+# ordispider(NMDS1,groups=treat)
+
+#plotting with ggvegan
+library(ggvegan)
+# library(ggplot2)
+# autoplot(NMDS1)
+
+#full control with fortified ordination output
+fort<-fortify(NMDS1)
+hab <- as.data.frame(as.factor(MS$layer))
+names(hab) <- c("depth")
+#transform habitat into factors:
+
+adonis2(sp.MS[1:3208]~depth,data=hab)
+#output similar to anova, gives an output of group means for species abundances within each of the classes
+#habitat R2 level is what was explained with adonis, Residual R2 is what was not explained with this adonis. 
+depth.colors <- c(
+  #"DCM" = "forestgreen",
+  "BAT" = "#7FC97F",
+  "MES" = "#BEAED4",
+  "EPI" = "#FDC086",
+  "SRF" = "#FFFF99"
+)
+p3<-ggplot() +
+  geom_point(data = subset(fort, score == 'sites'),
+             mapping = aes(x = NMDS1, y = NMDS2, colour=hab$depth),
+             alpha=0.8)+
+  geom_segment(data = subset(fort,score == 'species'),
+               mapping = aes(x = 0, y = 0, xend = NMDS1, yend = NMDS2),
+               arrow = arrow(length = unit(0.015, "npc"),
+                             type="closed"),
+               colour="darkgray",
+               size =0, #changing this to 0 keeps the scaling but doesnt show lines/data
+               alpha = 0)+
+  geom_abline(intercept = 0, slope = 0, linetype="dashed", linewidth=0.8,colour="gray")+
+  geom_vline(aes(xintercept=0), linetype="dashed", linewidth=0.8,colour="gray")+
+  theme(
+                panel.background = element_rect(color = "white", fill = "transparent"),
+                axis.text = element_text(color = "white"),
+                legend.text = element_text(color = "white"),
+                legend.title = element_text(color = "white"),
+                axis.title = element_text(color = "white"),
+                            plot.title = element_text(color = "white", size = 12, face = "bold", family = "Times New Roman", hjust = 0.5),
+            axis.ticks.length = unit(-0.05, "in"),
+            axis.text.y = element_text(margin=unit(c(0.3,0.3,0.3,0.3), "cm")),
+            axis.text.x = element_text(margin=unit(c(0.3,0.3,0.3,0.3), "cm")),
+            axis.ticks.x = element_blank(),
+            # aspect.ratio = 1,
+            plot.background = element_blank(),
+            panel.grid = element_blank(),
+            panel.border = element_blank(),
+            legend.background = element_blank(),
+        legend.position = ("right"))+
+  scale_color_manual(name = "depth", values = depth.colors)
+
+p3
+```
+
+## Network Indices
+
+We calculate different indices for subnetwork to compare them.
+
+```{r}
+web.mtx <- list()
+
+ex.LUT <- list(
+    "SRF" = c("SRF"),
+    "EPI" = c("DCM", "EPI"),
+    "MES" = c("MES"),
+    "BAT" = c("BAT"))
+
+for (i in 1:length(ex.LUT)) {
+    web.mtx[[names(ex.LUT[i])]] <- MS %>% filter(layer %in% ex.LUT[[i]]) %>% select(all_of(1:ab.mtx.ncol)) %>% as.matrix() %>% .[, colSums(. != 0)]
+}
+web.mtx[["Whole"]] <- MS %>% select(all_of(1:ab.mtx.ncol)) %>% as.matrix() %>% .[, colSums(. != 0)] 
+```
+
+
+```{r}
+library(bipartite)
+library(tidyverse)
+library(furrr)
+library(MoMAColors)
+library(ggpubr)
+
+sum(web.mtx[["SRF"]])
+sum(web.mtx[["EPI"]])
+sum(web.mtx[["MES"]])
+sum(web.mtx[["BAT"]])
+
+network.indices <- c("interaction evenness", "Shannon diversity", "linkage density", "ISA", "togetherness")
+
+index.networklvl <- function(web.mtx.list, index.vec) {
+    network.res <- map(web.mtx.list, \(x) networklevel(x, index = index.vec, intereven = "sum")) %>% 
+        bind_rows %>% 
+        as.data.frame() %>% 
+        `rownames<-`(names(web.mtx.list))
+    return(network.res)
+}
+
+index.network.res <- index.networklvl(web.mtx, network.indices) %>% mutate(layer = rownames(.))
+
+#### Simulate Null models: swap web ####
+
+# swap.bootstrap <- 300
+
+# plan(multisession, workers = 4)
+# 
+# time.test <- system.time({
+#     null.models <- future_map(web.mtx[1:length(web.mtx)-1], \(x) nullmodel(x, N = 1, method = "swap.web"), .options = furrr_options(seed = TRUE))
+# })
+# 
+# time.estimate <- swap.bootstrap * time.test[3]
+# time.estimate <- paste0(floor(time.estimate / 3600), ' hour ', floor(time.estimate / 60 - 60 * floor(time.estimate / 3600)), ' min ', floor(time.estimate %% 60), ' s')
+
+# print(paste0("[Info] One simulation took ", time.test[3], " s, ", swap.bootstrap, " bootstrap replicates are estimated for ", time.estimate))
+
+# print(paste0("[Info] Start simulating null models: ", Sys.time()))
+
+# null.models <- future_map(web.mtx[1:length(web.mtx)-1], \(x) nullmodel(x, N = swap.bootstrap, method = "swap.web"), .options = furrr_options(seed = TRUE))
+# saveRDS(null.models, "data/NullModels_list.rds")
+null.models <- readRDS("data/NullModels_list.rds")
+
+# print(paste0("[Info] End simualting null models: ", Sys.time()))
+# print(paste0("[Info] Calculating indices for null models: ", Sys.time()))
+# 
+# null.model.indices <- map(null.models, \(x) {
+#     index.networklvl(x, network.indices)
+# })
+# 
+# print(paste0("[Info] End of calculating indices for null models: ", Sys.time()))
+
+#### Simulate Null models: r2d ####
+
+# r2d.bootstrap <- 300
+
+# plan(multisession, workers = 4)
+# 
+# time.test <- system.time({
+#     null.models <- future_map(web.mtx[1:length(web.mtx)-1], \(x) nullmodel(x, N = 1), .options = furrr_options(seed = TRUE))
+# })
+# 
+# time.estimate <- r2d.bootstrap * time.test[3]
+# time.estimate <- paste0(floor(time.estimate / 3600), ' hour ', floor(time.estimate / 60 - 60 * floor(time.estimate / 3600)), ' min ', floor(time.estimate %% 60), ' s')
+
+# print(paste0("[Info] One simulation took ", round(time.test[3], digit = 2), " s, ", r2d.bootstrap, " bootstrap replicates are estimated for ", time.estimate))
+# 
+# print(paste0("[Info] Start simulating null models: ", Sys.time()))
+
+# null.models.r2d <- future_map(web.mtx[1:length(web.mtx)-1], \(x) nullmodel(x, N = r2d.bootstrap), .options = furrr_options(seed = TRUE))
+# saveRDS(null.models.r2d, "data/NullModels_list_r2d.rds")
+null.models.r2d <- readRDS("data/NullModels_list_r2d.rds")
+
+# print(paste0("[Info] End simualting null models: ", Sys.time()))
+# print(paste0("[Info] Calculating indices for null models: ", Sys.time()))
+# 
+# null.model.indices.r2d <- map(null.models.r2d, \(x) {
+#     index.networklvl(x, network.indices)
+# })
+# 
+# print(paste0("[Info] End of calculating indices for null models: ", Sys.time()))
+
+### calculate p-value ####
+
+# null.model.indices.long <- map(c(1:length(null.model.indices.r2d)), \(x) {
+#     null.model.indices[[x]] %>%
+#         mutate(layer = names(null.model.indices)[x])
+# }) %>% bind_rows()
+
+# index <- "togetherness.HL"
+# null.model.indices.long %>% filter(layer == "MES") %>% dplyr::select(all_of(index)) %>% .[[1]] %>% hist()
+# abline(v=index.network.res[index][[2]][1], col="red", lwd=2)
+```
+
+Plot the indices:
+
+```{r}
+source("analysis/AES.R")
+
+plot.df.index <- index.network.res %>%
+    mutate(
+        "Linkage density" = `linkage density`/max(`linkage density`),
+        "Shannon diversity" = `Shannon diversity`/max(`Shannon diversity`),
+        "Interaction evenness" = `interaction evenness`,
+        "Interaction strength asymmetry" = `interaction strength asymmetry`,
+        "Species togetherness" = togetherness.HL,
+        "layer" = layer,
+        .keep = "unused") %>%
+    select(-c("togetherness.LL")) %>%
+    pivot_longer(., cols = -c("layer"))
+
+label <- c(
+    "BAT" = "Bathypelagic",
+    "MES" = "Mesopelagic",
+    "EPI" = "Epipelagic",
+    "SRF" = "Surface",
+    "Whole" = "Whole"
+)
+
+plot.list <- map(unique(plot.df.index$layer), \(x) {
+    plot <- plot.df.index %>% 
+        filter(layer == x) %>%
+        ggplot() +
+        geom_segment(aes(x = name, xend = name, y = 1, yend = 0), color = "#CCC", size = 8, alpha = 0.3, lineend = "round") +
+        geom_point(aes(x = name, y = value, color = name), size = 8) +
+        use_ACTCP_aes(use = "theme_tp_b") +
+        theme(
+            aspect.ratio = 1.7,
+            # axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+            axis.text.x = element_blank(),
+            axis.text.y = element_blank(),
+            panel.background = element_blank(),
+            legend.position = "none",
+            axis.title.y = element_text(color = "black", size = 18),
+        ) +
+        labs(x = '', y = label[x]) +
+        scale_color_moma_d("ustwo")
+    ggsave(filename = paste0("plots/index_", label[x], ".svg"), plot = plot, units = "cm", height = 8, width = 6)
+    return(plot)
+})
+```
+
+```{r}
+#| output: asis
+
+figs <- map(1:(length(label)-1), \(x) {
+        paste0('![', label[x], '](plots/index_', label[x], '.svg) \n\n')
+    }) %>% unlist() %>% paste0(collapse = '')
+
+cat(paste0('::: {#fig-indices layout-ncol=4} \n\n', figs, ':::', collapse = ''))
+```
+
+```{r}
+plot.index.legend <-
+    plot.df.index %>%
+    filter(layer == "BAT") %>%
+    ggplot() +
+    geom_point(aes(x = name, y = 0, color = name), size = 5) +
+    use_ACTCP_aes() +
+    scale_color_moma_d("ustwo") +
+    theme(
+        axis.text.x = element_text(angle = -90, hjust = 0, vjust = 0.5, color = "black", size = 16),
+        panel.background = element_blank(),
+        aspect.ratio = 1.3,
+        legend.position = 'none', 
+        axis.text.y = element_blank()
+    ) +
+    labs(x = '', y = '') +
+    ylim(c(0,0.001))
+```
+
+
+```{r}
+ggsave(filename = "plots/index_legend.svg", plot = plot.index.legend, units = "cm", height = 15, width = 15)
+```
+
+![Index Legends](plots/index_legend.svg)
