@@ -4,7 +4,7 @@ This is a tiny data analysis project for demonstrating in M. Sc. Biology module 
 
 The data used here is credited to Deutschmann et al., 2024. Analysis shown in this repo was done by Zhehao Hu and Jan Moritz Fehr.
 
-A digital version of poster for final presentation is available at [here](https://zzzhehao.github.io/).
+A digital version of poster for final presentation is available at [here](https://zzzhehao.github.io/biology-research/community-ecology/MediterraneanMicrobiome/publication/Poster.pdf).
 
 ## Reference
 
